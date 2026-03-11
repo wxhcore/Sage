@@ -24,7 +24,13 @@ from ..services.agent import (
     list_agents,
     optimize_system_prompt,
     update_agent,
+    generate_agent_abilities as generate_agent_abilities_service,
 )
+from ..schemas.agent import (
+    AgentAbilitiesRequest,
+    AgentAbilitiesData,
+)
+from sagents.utils.agent_abilities import AgentAbilitiesGenerationError
 from sagents.utils.prompt_manager import PromptManager
 
 # ============= Agent相关模型 =============
@@ -272,39 +278,26 @@ async def auto_generate(request: AutoGenAgentRequest):
     )
 
 
-@agent_router.post("/system-prompt/optimize")
-async def optimize(request: SystemPromptOptimizeRequest):
-    """
-    优化系统提示词
-
-    Args:
-        request: 系统提示词优化请求
-
-    Returns:
-        StandardResponse: 包含优化后的系统提示词的标准响应
-    """
-    res = await optimize_system_prompt(
-        original_prompt=request.original_prompt,
-        optimization_goal=request.optimization_goal,
-    )
-    return await Response.succ(data=res, message="系统提示词优化成功")
-
-
-@agent_router.post("/{agent_id}/file_workspace")
-async def get_workspace(agent_id: str, request: Request):
-    """获取指定Agent的文件工作空间"""
-    user_home = Path.home()
-    sage_home = user_home / ".sage"
-    workspace_path = sage_home / "agents" / agent_id
-    logger.info(f"获取Agent {agent_id} 的工作空间路径：{workspace_path}")
-    if not workspace_path or not os.path.exists(workspace_path):
+@agent_router.post("/abilities")
+async def get_agent_abilities(payload: AgentAbilitiesRequest):
+    """Desktop 端：生成指定 Agent 的能力卡片列表"""
+    try:
+        items = await generate_agent_abilities_service(
+            agent_id=payload.agent_id,
+            session_id=payload.session_id,
+            context=payload.context,
+            language="zh",
+        )
+        data = AgentAbilitiesData(items=items)
         return await Response.succ(
-             message="工作空间为空",
-             data={
-                "agent_id": agent_id,
-                "files": [],
-                "message": "工作空间为空",
-            }
+            data=data.model_dump(),
+            message="成功获取Agent能力列表",
+        )
+    except AgentAbilitiesGenerationError as e:
+        logger.error(f"生成 Agent 能力列表失败: {e}")
+        return await Response.error(
+            message="获取能力列表失败，请稍后重试",
+            error_detail=str(e),
         )
 
     files: List[Dict[str, Any]] = []

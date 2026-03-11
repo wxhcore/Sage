@@ -4,6 +4,7 @@ import { toast } from 'vue-sonner'
 import SparkMD5 from 'spark-md5'
 import { useLanguage } from '@/utils/i18n.js'
 import { chatAPI } from '@/api/chat.js'
+import { agentAPI } from '@/api/agent.js'
 import { useChatActiveSessionCache } from '@/composables/chat/useChatActiveSessionCache.js'
 import { useChatScroll } from '@/composables/chat/useChatScroll.js'
 import { useChatStream } from '@/composables/chat/useChatStream.js'
@@ -45,6 +46,14 @@ export const useChatPage = (props) => {
   const showSettings = ref(false)
   const currentTraceId = ref(null)
 
+  // 能力面板相关状态
+  const abilityItems = ref([])
+  const abilityLoading = ref(false)
+  const abilityError = ref(null)
+  const showAbilityPanel = ref(false)
+  const abilityPresetInput = ref('')
+  const abilityCacheByAgent = ref({})
+
   // 打开工作台（统一方法）
   const openWorkbench = (options = {}) => {
     const { toolCallId = null, realtime = true } = options
@@ -82,12 +91,16 @@ export const useChatPage = (props) => {
         panelStore.openWorkspace()
         refreshWorkspace()
       }
+      // 打开/切换其它面板时关闭能力面板
+      showAbilityPanel.value = false
     } else if (panel === 'settings') {
       if (panelStore.activePanel === 'settings') {
         panelStore.closeAll()
       } else {
         panelStore.openSettings()
       }
+      // 打开/切换其它面板时关闭能力面板
+      showAbilityPanel.value = false
     }
   }
 
@@ -435,6 +448,54 @@ export const useChatPage = (props) => {
     }
   }
 
+  // 能力面板：打开 / 关闭 / 重试 / 选择卡片
+  const openAbilityPanel = async ({ forceRefresh = false } = {}) => {
+    if (!selectedAgent.value) return
+    const agentId = selectedAgent.value.id
+    const sessionId = currentSessionId.value
+
+    showAbilityPanel.value = true
+    abilityError.value = null
+
+    const cache = abilityCacheByAgent.value[agentId]
+    if (!forceRefresh && cache && Array.isArray(cache)) {
+      abilityItems.value = cache
+      return
+    }
+
+    abilityLoading.value = true
+    try {
+      const items = await agentAPI.getAgentAbilities({
+        agentId,
+        sessionId,
+        context: {}
+      })
+      abilityItems.value = items || []
+      abilityCacheByAgent.value = {
+        ...abilityCacheByAgent.value,
+        [agentId]: abilityItems.value
+      }
+    } catch (err) {
+      console.error('加载 Agent 能力失败:', err)
+      abilityError.value = err?.message || t('chat.abilities.error') || '获取能力列表失败'
+    } finally {
+      abilityLoading.value = false
+    }
+  }
+
+  const closeAbilityPanel = () => {
+    showAbilityPanel.value = false
+  }
+
+  const retryAbilityFetch = () => {
+    openAbilityPanel({ forceRefresh: true })
+  }
+
+  const onAbilityCardClick = (item) => {
+    if (!item || !item.promptText) return
+    abilityPresetInput.value = item.promptText
+  }
+
   useChatLifecycle({
     props,
     route,
@@ -490,6 +551,11 @@ export const useChatPage = (props) => {
     }
   })
 
+  // 监听 Agent 变更时关闭能力面板，但保留缓存
+  watch(() => selectedAgentId.value, () => {
+    showAbilityPanel.value = false
+  })
+
   return {
     t,
     agents,
@@ -520,6 +586,16 @@ export const useChatPage = (props) => {
     workspaceFiles,
     downloadFile,
     deleteFile,
-    updateConfig
+    updateConfig,
+    // 能力面板相关
+    abilityItems,
+    abilityLoading,
+    abilityError,
+    showAbilityPanel,
+    abilityPresetInput,
+    openAbilityPanel,
+    closeAbilityPanel,
+    retryAbilityFetch,
+    onAbilityCardClick
   }
 }

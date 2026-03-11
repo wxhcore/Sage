@@ -13,7 +13,7 @@
             </SelectItem>
           </SelectContent>
         </Select>
-        
+
         <div class="h-4 w-[1px] bg-border mx-1"></div>
 
         <TooltipProvider>
@@ -56,12 +56,21 @@
     </div>
     <div class="flex-1 overflow-hidden flex flex-row pb-6">
       <!-- 主聊天区域 -->
-      <div 
+      <div
         class="flex-1 flex flex-col min-w-0 bg-muted/5 relative transition-all duration-200"
         :class="{ 'mr-0': !anyPanelOpen }"
       >
         <div ref="messagesListRef" class="flex-1 overflow-y-auto p-4 sm:p-6 scroll-smooth" @scroll="handleScroll">
-          <div v-if="!filteredMessages || filteredMessages.length === 0" class="flex flex-col items-center justify-center text-center p-8 h-full text-muted-foreground animate-in fade-in zoom-in duration-500">
+          <AbilityPanel
+            v-if="showAbilityPanel"
+            :items="abilityItems"
+            :loading="abilityLoading"
+            :error="abilityError"
+            @close="closeAbilityPanel"
+            @retry="retryAbilityFetch"
+            @select="onAbilityCardClick"
+          />
+           <div v-if="!filteredMessages || filteredMessages.length === 0" class="flex flex-col items-center justify-center text-center p-8 h-full text-muted-foreground animate-in fade-in zoom-in duration-500">
             <div class="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-6 shadow-sm overflow-hidden">
                <img
                  v-if="selectedAgent"
@@ -88,7 +97,7 @@
               @sendMessage="handleSendMessage"
               @openSubSession="handleOpenSubSession"
             />
-            
+
             <!-- Global loading indicator when no messages or waiting for first chunk of response -->
             <div v-if="showLoadingBubble" class="flex justify-start py-6 px-4 animate-in fade-in duration-300">
                <LoadingBubble />
@@ -96,29 +105,47 @@
           </div>
           <div ref="messagesEndRef" />
         </div>
-        
+
         <div class="flex-none p-4  bg-background" v-if="selectedAgent">
-            <MessageInput :is-loading="isCurrentSessionLoading" @send-message="handleSendMessage" @stop-generation="stopGeneration" />
+            <div class="flex justify-end pb-2 pr-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-8 px-3 gap-2 text-primary hover:bg-primary/10"
+                :disabled="isCurrentSessionLoading || abilityLoading"
+                :title="t('chat.abilities.buttonLabel')"
+                @click="handleClickAbilityButton"
+              >
+                <Sparkles class="h-4 w-4" />
+                {{ t('chat.abilities.buttonLabel') }}
+              </Button>
+            </div>
+            <MessageInput
+              :is-loading="isCurrentSessionLoading"
+              :preset-text="abilityPresetInput"
+              @send-message="handleSendMessageWithAbilityClear"
+              @stop-generation="stopGeneration"
+            />
         </div>
       </div>
 
       <!-- 右侧面板区域 -->
       <TransitionGroup name="panel">
-        <WorkspacePanel 
-          v-if="showWorkspace" 
+        <WorkspacePanel
+          v-if="showWorkspace"
           :workspace-files="workspaceFiles"
-          @download-file="downloadFile" 
-          @delete-file="deleteFile" 
-          @close="showWorkspace = false" 
+          @download-file="downloadFile"
+          @delete-file="deleteFile"
+          @close="showWorkspace = false"
         />
 
-        <ConfigPanel 
-          v-else-if="showSettings" 
-          :agents="agents" 
-          :selected-agent="selectedAgent" 
+        <ConfigPanel
+          v-else-if="showSettings"
+          :agents="agents"
+          :selected-agent="selectedAgent"
           :config="config"
-          @config-change="updateConfig" 
-          @close="showSettings = false" 
+          @config-change="updateConfig"
+          @close="showSettings = false"
         />
 
         <WorkbenchPreview
@@ -129,7 +156,7 @@
         />
       </TransitionGroup>
 
-      <SubSessionPanel 
+      <SubSessionPanel
         :is-open="!!activeSubSessionId"
         :session-id="activeSubSessionId"
         :messages="subSessionMessages"
@@ -144,7 +171,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Bot, Settings, FolderOpen, Monitor } from 'lucide-vue-next'
+import { Bot, Settings, FolderOpen, Monitor, Sparkles } from 'lucide-vue-next'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import MessageRenderer from '@/components/chat/MessageRenderer.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -153,6 +180,7 @@ import WorkspacePanel from '@/components/chat/WorkspacePanel.vue'
 import LoadingBubble from '@/components/chat/LoadingBubble.vue'
 import SubSessionPanel from '@/components/chat/SubSessionPanel.vue'
 import WorkbenchPreview from '@/components/chat/WorkbenchPreview.vue'
+import AbilityPanel from '@/components/chat/AbilityPanel.vue'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -164,6 +192,7 @@ import {
 import { useChatPage } from '@/composables/chat/useChatPage.js'
 import { usePanelStore } from '@/stores/panel.js'
 import { storeToRefs } from 'pinia'
+import { useLanguage } from '@/utils/i18n.js'
 
 const props = defineProps({
   selectedConversation: {
@@ -176,11 +205,12 @@ const props = defineProps({
   }
 })
 
+const { t } = useLanguage()
+
 const panelStore = usePanelStore()
 const { showWorkbench, showWorkspace, showSettings } = storeToRefs(panelStore)
 
 const {
-  t,
   agents,
   selectedAgent,
   selectedAgentId,
@@ -207,8 +237,33 @@ const {
   workspaceFiles,
   downloadFile,
   deleteFile,
-  updateConfig
+  updateConfig,
+  // 能力面板相关
+  abilityItems,
+  abilityLoading,
+  abilityError,
+  showAbilityPanel,
+  abilityPresetInput,
+  openAbilityPanel,
+  closeAbilityPanel,
+  retryAbilityFetch,
+  onAbilityCardClick
 } = useChatPage(props)
+
+// 能力按钮点击：切换能力面板
+const handleClickAbilityButton = () => {
+  if (!showAbilityPanel.value) {
+    openAbilityPanel()
+  } else {
+    closeAbilityPanel()
+  }
+}
+
+// 发送消息后清空能力预置输入
+const handleSendMessageWithAbilityClear = (content, options) => {
+  handleSendMessage(content, options)
+  abilityPresetInput.value = ''
+}
 
 // 计算是否有面板打开
 const anyPanelOpen = computed(() => showWorkspace.value || showSettings.value || showWorkbench.value)
